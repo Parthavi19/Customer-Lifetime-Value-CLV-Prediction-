@@ -1,24 +1,19 @@
-FROM python:3.11-slim
+FROM python:3.9-slim
 
 WORKDIR /app
 
-# System deps (+ supervisord)
-RUN apt-get update && apt-get install -y \
-    build-essential python3-dev supervisor && rm -rf /var/lib/apt/lists/*
-
-# Python deps
+# Copy requirements and install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Project files
-COPY src ./src
-COPY ui ./ui
-COPY data ./data
-COPY supervisord.conf .
-COPY README.md .
-ENV PYTHONPATH=/app
+# Copy application code
+COPY . .
 
-EXPOSE 8501 8000
+# Create necessary directories
+RUN mkdir -p data artifacts
 
-# Run Streamlit + FastAPI together
-CMD ["supervisord", "-c", "supervisord.conf"]
+# Expose port 8080 for Cloud Run
+EXPOSE 8080
+
+# Run Streamlit on port 8080 (Cloud Run requirement)
+CMD ["streamlit", "run", "app_streamlit.py", "--server.port=8080", "--server.address=0.0.0.0", "--server.headless=true", "--server.fileWatcherType=none", "--browser.gatherUsageStats=false"]
