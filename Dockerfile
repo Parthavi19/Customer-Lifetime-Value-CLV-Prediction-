@@ -1,8 +1,14 @@
 FROM python:3.9-slim
 
+# Set working directory
 WORKDIR /app
 
-# Copy requirements and install dependencies
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    supervisor \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -10,10 +16,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Create necessary directories
-RUN mkdir -p data artifacts
+RUN mkdir -p data artifacts ui src
 
-# Expose port 8080 for Cloud Run
+# Copy supervisord configuration
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Create a non-root user for better security
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
+
+# Expose port (Cloud Run will set PORT environment variable)
 EXPOSE 8080
 
-# Run Streamlit on port 8080 (Cloud Run requirement)
-CMD ["streamlit", "run", "app_streamlit.py", "--server.port=8080", "--server.address=0.0.0.0", "--server.headless=true", "--server.fileWatcherType=none", "--browser.gatherUsageStats=false"]
+# Use supervisord to manage both FastAPI and Streamlit
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
