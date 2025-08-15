@@ -1,11 +1,13 @@
 import sys
 import os
+import asyncio
+from contextlib import asynccontextmanager
 
 # Ensure project root on path
 sys.path.insert(0, os.path.abspath('.'))
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 import joblib
 import pandas as pd
 from typing import Dict, Any
@@ -15,6 +17,34 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Global variable to track initialization status
+initialization_complete = False
+initialization_error = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize the application on startup"""
+    global initialization_complete, initialization_error
+    
+    logger.info("Starting application initialization...")
+    
+    try:
+        # Run initialization in a separate thread to avoid blocking
+        from startup import main as startup_main
+        await asyncio.get_event_loop().run_in_executor(None, startup_main)
+        
+        initialization_complete = True
+        logger.info("Application initialization completed successfully")
+        
+    except Exception as e:
+        initialization_error = str(e)
+        logger.error(f"Application initialization failed: {e}")
+        # Continue anyway to allow basic health checks
+        
+    yield  # Application is running
+    
+    logger.info("Shutting down application...")
+
 try:
     from src.config import (
         XGB_MODEL, SCALER_F, FEATURES_F,
@@ -22,23 +52,55 @@ try:
     )
 except ImportError as e:
     logger.error(f"Failed to import config: {e}")
-    raise
+    # Create dummy paths to prevent crashes
+    XGB_MODEL = "artifacts/xgb_model.joblib"
+    SCALER_F = "artifacts/scaler.joblib"
+    FEATURES_F = "artifacts/feature_cols.joblib"
+    KM_MODEL_F = "artifacts/kmeans_model.joblib"
+    KM_SCALER_F = "artifacts/kmeans_scaler.joblib"
+    SEG_LABELS_F = "artifacts/segment_label_map.joblib"
 
 app = FastAPI(
     title="CLV Prediction API",
     description="Customer Lifetime Value Prediction and Segmentation API",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 @app.get("/")
 async def root():
-    """Redirect root to Streamlit dashboard"""
-    return RedirectResponse(url="http://localhost:8501")
+    """Root endpoint with API information"""
+    return {
+        "message": "CLV Prediction API",
+        "version": "1.0.0",
+        "status": "ready" if initialization_complete else "initializing",
+        "endpoints": ["/health", "/predict", "/segment", "/features/required"]
+    }
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
     try:
+        if initialization_error:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "error",
+                    "message": f"Initialization failed: {initialization_error}",
+                    "ready": False
+                }
+            )
+        
+        if not initialization_complete:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "initializing",
+                    "message": "Application is still starting up",
+                    "ready": False
+                }
+            )
+        
         # Check if required model files exist
         models_status = {
             "xgb_model": os.path.exists(XGB_MODEL),
@@ -48,18 +110,31 @@ async def health_check():
             "kmeans_scaler": os.path.exists(KM_SCALER_F)
         }
         
-        return {
-            "status": "ok",
-            "models_available": models_status,
-            "all_models_ready": all(models_status.values())
-        }
+        all_ready = all(models_status.values())
+        
+        return JSONResponse(
+            status_code=200 if all_ready else 503,
+            content={
+                "status": "ready" if all_ready else "partial",
+                "initialization_complete": initialization_complete,
+                "models_available": models_status,
+                "all_models_ready": all_ready
+            }
+        )
+        
     except Exception as e:
         logger.error(f"Health check failed: {e}")
-        return {"status": "error", "message": str(e)}
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": str(e), "ready": False}
+        )
 
 @app.post("/predict")
 async def predict_clv(features: Dict[str, Any]):
     """Predict CLV for given customer features"""
+    if not initialization_complete:
+        raise HTTPException(status_code=503, detail="Service is still initializing")
+        
     try:
         # Load models
         model = joblib.load(XGB_MODEL)
@@ -97,6 +172,9 @@ async def predict_clv(features: Dict[str, Any]):
 @app.post("/segment")
 async def predict_segment(features: Dict[str, Any]):
     """Predict customer segment for given features"""
+    if not initialization_complete:
+        raise HTTPException(status_code=503, detail="Service is still initializing")
+        
     try:
         # Load models
         km = joblib.load(KM_MODEL_F)
@@ -152,9 +230,13 @@ async def get_required_features():
             "segmentation_features": ['recency_days', 'frequency', 'monetary']
         }
     except FileNotFoundError:
-        raise HTTPException(status_code=503, detail="Feature definitions not available. Please train the model first.")
+        # Return default features if file doesn't exist
+        return {
+            "clv_prediction_features": ['recency_days', 'frequency', 'monetary', 'avg_order_value', 'std_order_value', 'avg_days_between_txn'],
+            "segmentation_features": ['recency_days', 'frequency', 'monetary']
+        }
 
-# Add middleware for CORS if needed
+# Add CORS middleware
 from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
@@ -169,4 +251,3 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8080))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
