@@ -1,110 +1,133 @@
 #!/usr/bin/env python3
 """
-Startup script for Cloud Run deployment
-Ensures data exists and models are trained before starting the API
+Startup script to initialize the application
+This ensures models are trained before the API/UI starts
 """
 
-import os
 import sys
+import os
 import logging
-from pathlib import Path
 
 # Add project root to Python path
 sys.path.insert(0, os.path.abspath('.'))
 
-logging.basicConfig(level=logging.INFO)
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-def ensure_data_exists():
-    """Ensure sample data exists if no data file is found"""
-    try:
-        from src.config import CSV_PATH
-        if not CSV_PATH.exists():
-            logger.info("No data file found, creating sample data...")
-            from create_sample_data import create_sample_data
-            create_sample_data()
-    except Exception as e:
-        logger.error(f"Error ensuring data exists: {e}")
-        # Create minimal sample data as fallback
-        create_minimal_sample_data()
+def check_data_file():
+    """Check if data file exists"""
+    from src.config import CSV_PATH
+    if not os.path.exists(CSV_PATH):
+        logger.error(f"Data file not found: {CSV_PATH}")
+        # Create sample data file if none exists
+        create_sample_data()
+        return True
+    logger.info(f"Data file found: {CSV_PATH}")
+    return True
 
-def create_minimal_sample_data():
-    """Create minimal sample data as fallback"""
+def create_sample_data():
+    """Create sample data if no data file exists"""
     import pandas as pd
     from datetime import datetime, timedelta
+    import numpy as np
     
-    Path("data").mkdir(exist_ok=True)
+    logger.info("Creating sample data...")
     
-    # Minimal dataset
+    # Generate sample transaction data
+    np.random.seed(42)
+    n_customers = 1000
+    n_transactions = 5000
+    
+    # Create customers
+    customer_ids = [f"CUST_{i:04d}" for i in range(1, n_customers + 1)]
+    
+    # Generate transactions
     data = []
-    for i in range(100):
+    start_date = datetime.now() - timedelta(days=365*2)
+    
+    for i in range(n_transactions):
+        customer_id = np.random.choice(customer_ids)
+        transaction_date = start_date + timedelta(
+            days=np.random.randint(0, 365*2),
+            hours=np.random.randint(0, 24),
+            minutes=np.random.randint(0, 60)
+        )
+        quantity = np.random.randint(1, 5)
+        unit_price = np.random.uniform(10, 200)
+        total_amount = quantity * unit_price
+        
         data.append({
-            'transaction_date': (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d'),
-            'customer_id': i % 20 + 1,
-            'transaction_id': f'TXN_{1000 + i}',
-            'quantity_purchased': 1,
-            'unit_price': 50.0,
-            'total_sale_amount': 50.0
+            'transaction_id': f"TXN_{i:06d}",
+            'customer_id': customer_id,
+            'transaction_date': transaction_date.strftime('%Y-%m-%d %H:%M:%S'),
+            'quantity_purchased': quantity,
+            'unit_price': round(unit_price, 2),
+            'total_sale_amount': round(total_amount, 2)
         })
     
     df = pd.DataFrame(data)
-    df.to_csv("data/sample_transactions.csv", index=False)
-    logger.info("Created minimal sample data")
+    
+    # Ensure data directory exists
+    os.makedirs('data', exist_ok=True)
+    df.to_csv('data/sample_transactions.csv', index=False)
+    logger.info(f"Created sample data with {len(df)} transactions for {len(df['customer_id'].unique())} customers")
 
-def check_and_train_models():
-    """Check if models exist, train if they don't"""
+def check_models():
+    """Check if trained models exist"""
+    from src.config import XGB_MODEL, SCALER_F, FEATURES_F, KM_MODEL_F
+    
+    model_files = [XGB_MODEL, SCALER_F, FEATURES_F, KM_MODEL_F]
+    missing_models = [f for f in model_files if not os.path.exists(f)]
+    
+    if missing_models:
+        logger.info(f"Missing model files: {missing_models}")
+        return False
+    
+    logger.info("All model files found")
+    return True
+
+def train_models():
+    """Train the models"""
     try:
-        from src.config import XGB_MODEL, KM_MODEL_F, CUSTOMER_FEATS
-        
-        # Check if models exist
-        if not (XGB_MODEL.exists() and KM_MODEL_F.exists() and CUSTOMER_FEATS.exists()):
-            logger.info("Models not found, training...")
-            from src.train_pipeline import main as train_main
-            train_main()
-            logger.info("Training completed successfully")
-        else:
-            logger.info("Models already exist, skipping training")
-            
+        logger.info("Starting model training...")
+        from src.train_pipeline import main as train_main
+        train_main()
+        logger.info("Model training completed successfully")
+        return True
     except Exception as e:
-        logger.error(f"Error during model training: {e}")
-        # Create dummy models for basic API functionality
-        create_dummy_artifacts()
-
-def create_dummy_artifacts():
-    """Create dummy artifacts to prevent app crashes"""
-    from pathlib import Path
-    import joblib
-    import pandas as pd
-    
-    artifacts_dir = Path("artifacts")
-    artifacts_dir.mkdir(exist_ok=True)
-    
-    # Create dummy feature list
-    features = ['recency_days', 'frequency', 'monetary', 'avg_order_value', 'std_order_value', 'avg_days_between_txn']
-    joblib.dump(features, artifacts_dir / "feature_cols.joblib")
-    
-    # Create dummy customer features CSV
-    dummy_df = pd.DataFrame({
-        'customer_id': [1, 2, 3],
-        'predicted_clv': [100, 200, 150],
-        'segment_label': [0, 1, 0],
-        'segment_name': ['Low Value', 'High Value', 'Low Value']
-    })
-    dummy_df.to_csv(artifacts_dir / "customer_features.csv", index=False)
-    
-    logger.info("Created dummy artifacts for basic functionality")
+        logger.error(f"Model training failed: {e}")
+        return False
 
 def main():
-    """Main startup sequence"""
-    logger.info("Starting application initialization...")
+    """Main startup function"""
+    logger.info("=== Application Startup ===")
     
-    # Ensure data exists
-    ensure_data_exists()
-    
-    # Check and train models
-    check_and_train_models()
-    
-    logger.info("Application initialization completed")
+    try:
+        # Check data file
+        if not check_data_file():
+            logger.error("Data check failed")
+            return False
+        
+        # Check if models exist, train if not
+        if not check_models():
+            logger.info("Models not found, starting training...")
+            if not train_models():
+                logger.error("Failed to train models")
+                return False
+        else:
+            logger.info("Models already exist, skipping training")
+        
+        logger.info("=== Startup completed successfully ===")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Startup failed: {e}")
+        return False
 
 if __name__ == "__main__":
-    main()
+    success = main()
+    sys.exit(0 if success else 1)
