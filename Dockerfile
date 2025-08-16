@@ -13,8 +13,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy critical application files explicitly
-COPY app_streamlit.py .
 COPY api.py .
+COPY ui/ ui/
 COPY src/ src/
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
@@ -25,7 +25,7 @@ COPY . .
 RUN mkdir -p data artifacts ui src
 
 # Verify critical files exist
-RUN ls -l /app/app_streamlit.py /app/api.py || (echo "Critical files missing" && exit 1)
+RUN ls -l /app/api.py /app/ui/app_streamlit.py || (echo "Critical files missing" && exit 1)
 
 # Create a non-root user for better security
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
