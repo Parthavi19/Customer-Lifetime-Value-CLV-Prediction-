@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-Startup script to initialize the application
-This ensures models are trained before the API/UI starts
+Startup script for CLV Dashboard
+Handles initialization for the ui/ and src/ file structure
 """
 
 import sys
 import os
 import logging
+from pathlib import Path
 
 # Add project root to Python path
-sys.path.insert(0, os.path.abspath('.'))
+project_root = Path(__file__).parent.absolute()
+sys.path.insert(0, str(project_root))
 
 # Configure logging
 logging.basicConfig(
@@ -18,26 +20,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def check_data_file():
-    """Check if data file exists"""
-    from src.config import CSV_PATH
-    if not os.path.exists(CSV_PATH):
-        logger.error(f"Data file not found: {CSV_PATH}")
-        # Create sample data file if none exists
-        create_sample_data()
-        return True
-    logger.info(f"Data file found: {CSV_PATH}")
-    return True
-
 def create_sample_data():
-    """Create sample data if no data file exists"""
+    """Create sample transaction data"""
     import pandas as pd
-    from datetime import datetime, timedelta
     import numpy as np
+    from datetime import datetime, timedelta
     
-    logger.info("Creating sample data...")
+    logger.info("Creating sample transaction data...")
     
-    # Generate sample transaction data
     np.random.seed(42)
     n_customers = 1000
     n_transactions = 5000
@@ -72,49 +62,96 @@ def create_sample_data():
     df = pd.DataFrame(data)
     
     # Ensure data directory exists
-    os.makedirs('data', exist_ok=True)
-    df.to_csv('data/sample_transactions.csv', index=False)
-    logger.info(f"Created sample data with {len(df)} transactions for {len(df['customer_id'].unique())} customers")
+    data_dir = project_root / 'data'
+    data_dir.mkdir(exist_ok=True)
+    
+    csv_path = data_dir / 'sample_transactions.csv'
+    df.to_csv(csv_path, index=False)
+    
+    logger.info(f"Created sample data: {csv_path}")
+    logger.info(f"Data shape: {df.shape}")
+    logger.info(f"Unique customers: {df['customer_id'].nunique()}")
+    
+    return csv_path
+
+def check_data():
+    """Check if data file exists"""
+    try:
+        # Try to import config and check configured path
+        from src.config import CSV_PATH
+        if os.path.exists(CSV_PATH):
+            logger.info(f"Data file found: {CSV_PATH}")
+            return True
+    except ImportError:
+        logger.warning("Could not import config, checking default locations")
+    
+    # Check common locations
+    data_dir = project_root / 'data'
+    csv_files = list(data_dir.glob('*.csv')) if data_dir.exists() else []
+    
+    if csv_files:
+        logger.info(f"Found CSV files: {csv_files}")
+        return True
+    
+    logger.info("No data files found, will create sample data")
+    return False
 
 def check_models():
     """Check if trained models exist"""
-    from src.config import XGB_MODEL, SCALER_F, FEATURES_F, KM_MODEL_F
+    artifacts_dir = project_root / 'artifacts'
     
-    model_files = [XGB_MODEL, SCALER_F, FEATURES_F, KM_MODEL_F]
-    missing_models = [f for f in model_files if not os.path.exists(f)]
+    required_files = [
+        'xgb_model.joblib',
+        'scaler.joblib',
+        'feature_cols.joblib',
+        'kmeans_model.joblib'
+    ]
     
-    if missing_models:
-        logger.info(f"Missing model files: {missing_models}")
+    missing_files = []
+    for file in required_files:
+        file_path = artifacts_dir / file
+        if not file_path.exists():
+            missing_files.append(str(file_path))
+    
+    if missing_files:
+        logger.info(f"Missing model files: {missing_files}")
         return False
     
     logger.info("All model files found")
     return True
 
 def train_models():
-    """Train the models"""
+    """Train the models using the pipeline"""
     try:
-        logger.info("Starting model training...")
+        logger.info("Starting model training pipeline...")
         from src.train_pipeline import main as train_main
         train_main()
         logger.info("Model training completed successfully")
         return True
     except Exception as e:
         logger.error(f"Model training failed: {e}")
+        logger.exception("Training error details:")
         return False
 
 def main():
     """Main startup function"""
-    logger.info("=== Application Startup ===")
+    logger.info("=== CLV Dashboard Startup ===")
+    logger.info(f"Project root: {project_root}")
+    logger.info(f"Python path: {sys.path[:3]}")
     
     try:
-        # Check data file
-        if not check_data_file():
-            logger.error("Data check failed")
-            return False
+        # Ensure artifacts directory exists
+        artifacts_dir = project_root / 'artifacts'
+        artifacts_dir.mkdir(exist_ok=True)
         
-        # Check if models exist, train if not
+        # Check data
+        if not check_data():
+            logger.info("Creating sample data...")
+            create_sample_data()
+        
+        # Check models
         if not check_models():
-            logger.info("Models not found, starting training...")
+            logger.info("Training models...")
             if not train_models():
                 logger.error("Failed to train models")
                 return False
@@ -126,6 +163,7 @@ def main():
         
     except Exception as e:
         logger.error(f"Startup failed: {e}")
+        logger.exception("Startup error details:")
         return False
 
 if __name__ == "__main__":
