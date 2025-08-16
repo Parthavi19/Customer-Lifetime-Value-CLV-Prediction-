@@ -23,8 +23,9 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p data artifacts ui src
 
-# Verify critical files exist
-RUN ls -l /app/ui/app_streamlit.py /app/src/api.py || (echo "Critical files missing" && exit 1)
+# Verify critical files and supervisord.conf exist
+RUN ls -la /app/ui/app_streamlit.py /app/src/api.py /etc/supervisor/conf.d/supervisord.conf || (echo "Critical files or config missing" && exit 1)
+RUN cat /etc/supervisor/conf.d/supervisord.conf
 
 # Create a non-root user for better security
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
