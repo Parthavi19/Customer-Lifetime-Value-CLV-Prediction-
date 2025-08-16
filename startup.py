@@ -1,170 +1,259 @@
 #!/usr/bin/env python3
 """
-Startup script for CLV Dashboard
-Handles initialization for the ui/ and src/ file structure
+Enhanced startup script for CLV Dashboard
+Handles environment setup and compatibility issues
 """
 
 import sys
 import os
+import subprocess
 import logging
 from pathlib import Path
-
-# Add project root to Python path
-project_root = Path(__file__).parent.absolute()
-sys.path.insert(0, str(project_root))
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
+def check_python_version():
+    """Check if Python version is compatible"""
+    version = sys.version_info
+    if version.major < 3 or (version.major == 3 and version.minor < 8):
+        logger.error(f"Python {version.major}.{version.minor} detected. Python 3.8+ required.")
+        return False
+    logger.info(f"Python {version.major}.{version.minor}.{version.micro} - OK")
+    return True
+
+def install_compatible_packages():
+    """Install compatible package versions"""
+    logger.info("Installing compatible packages...")
+    
+    compatible_packages = [
+        "numpy==1.23.5",
+        "pandas==2.0.3",
+        "scikit-learn==1.3.0",
+        "xgboost==1.7.6",
+        "shap==0.41.0",
+        "streamlit==1.27.0",
+        "joblib==1.3.2",
+        "matplotlib==3.7.2"
+    ]
+    
+    try:
+        for package in compatible_packages:
+            logger.info(f"Installing {package}")
+            result = subprocess.run([
+                sys.executable, "-m", "pip", "install", package, "--upgrade"
+            ], capture_output=True, text=True, check=True)
+            
+        logger.info("✅ All packages installed successfully")
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.error(f"❌ Package installation failed: {e}")
+        logger.error(f"Error output: {e.stderr}")
+        return False
+
+def check_data_directory():
+    """Check and create data directory"""
+    data_dir = Path("data")
+    if not data_dir.exists():
+        data_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Created data directory: {data_dir}")
+    
+    # Check for CSV files
+    csv_files = list(data_dir.glob("*.csv"))
+    if not csv_files:
+        logger.warning("⚠️  No CSV files found in data/ directory")
+        logger.info("Please add your transaction data CSV file to the data/ directory")
+        return False
+    
+    logger.info(f"✅ Found CSV file(s): {[f.name for f in csv_files]}")
+    return True
+
+def create_artifacts_directory():
+    """Create artifacts directory for models"""
+    artifacts_dir = Path("artifacts")
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Artifacts directory ready: {artifacts_dir}")
+    return True
+
+def test_imports():
+    """Test critical imports"""
+    logger.info("Testing critical imports...")
+    
+    critical_imports = [
+        ("pandas", "pd"),
+        ("numpy", "np"),
+        ("sklearn", None),
+        ("xgboost", "xgb"),
+        ("joblib", None),
+        ("matplotlib.pyplot", "plt")
+    ]
+    
+    failed_imports = []
+    
+    for module, alias in critical_imports:
+        try:
+            if alias:
+                exec(f"import {module} as {alias}")
+            else:
+                exec(f"import {module}")
+            logger.info(f"✅ {module} - OK")
+        except ImportError as e:
+            logger.error(f"❌ {module} - FAILED: {e}")
+            failed_imports.append(module)
+    
+    # Test SHAP separately (optional)
+    try:
+        import shap
+        logger.info(f"✅ SHAP {shap.__version__} - OK")
+    except ImportError as e:
+        logger.warning(f"⚠️  SHAP - OPTIONAL: {e}")
+    
+    return len(failed_imports) == 0, failed_imports
+
+def run_training_pipeline():
+    """Run the training pipeline if needed"""
+    logger.info("Checking if training pipeline needs to be run...")
+    
+    required_files = [
+        "artifacts/xgb_model.joblib",
+        "artifacts/customer_features.csv",
+        "artifacts/scaler.joblib",
+        "artifacts/feature_cols.joblib"
+    ]
+    
+    missing_files = [f for f in required_files if not os.path.exists(f)]
+    
+    if missing_files:
+        logger.info(f"Missing files: {missing_files}")
+        logger.info("Running training pipeline...")
+        
+        try:
+            # Try train_pipeline.py first
+            if os.path.exists("train_pipeline.py"):
+                result = subprocess.run([
+                    sys.executable, "train_pipeline.py"
+                ], capture_output=True, text=True, check=True)
+                logger.info("✅ Training pipeline completed successfully")
+                return True
+            # Fallback to src.train_pipeline
+            elif os.path.exists("src/train_pipeline.py"):
+                result = subprocess.run([
+                    sys.executable, "-m", "src.train_pipeline"
+                ], capture_output=True, text=True, check=True)
+                logger.info("✅ Training pipeline completed successfully")
+                return True
+            else:
+                logger.error("❌ No training pipeline found")
+                return False
+                
+        except subprocess.CalledProcessError as e:
+            logger.error(f"❌ Training pipeline failed: {e}")
+            logger.error(f"Error output: {e.stderr}")
+            if e.stdout:
+                logger.info(f"Standard output: {e.stdout}")
+            return False
+    else:
+        logger.info("✅ All required files exist - training pipeline not needed")
+        return True
+
 def create_sample_data():
-    """Create sample transaction data"""
+    """Create sample data if no data exists"""
     import pandas as pd
     import numpy as np
     from datetime import datetime, timedelta
     
+    data_dir = Path("data")
+    sample_file = data_dir / "sample_transactions.csv"
+    
+    if sample_file.exists():
+        logger.info("Sample data already exists")
+        return True
+    
     logger.info("Creating sample transaction data...")
     
+    # Generate sample data
     np.random.seed(42)
     n_customers = 1000
     n_transactions = 5000
     
-    # Create customers
-    customer_ids = [f"CUST_{i:04d}" for i in range(1, n_customers + 1)]
+    start_date = datetime.now() - timedelta(days=365)
     
-    # Generate transactions
+    # Generate sample transactions
     data = []
-    start_date = datetime.now() - timedelta(days=365*2)
-    
     for i in range(n_transactions):
-        customer_id = np.random.choice(customer_ids)
-        transaction_date = start_date + timedelta(
-            days=np.random.randint(0, 365*2),
-            hours=np.random.randint(0, 24),
-            minutes=np.random.randint(0, 60)
-        )
+        customer_id = np.random.randint(1000, 1000 + n_customers)
+        transaction_date = start_date + timedelta(days=np.random.randint(0, 365))
+        transaction_id = f"TXN_{i+1:06d}"
         quantity = np.random.randint(1, 5)
         unit_price = np.random.uniform(10, 200)
         total_amount = quantity * unit_price
         
         data.append({
-            'transaction_id': f"TXN_{i:06d}",
             'customer_id': customer_id,
-            'transaction_date': transaction_date.strftime('%Y-%m-%d %H:%M:%S'),
+            'transaction_date': transaction_date.strftime('%Y-%m-%d'),
+            'transaction_id': transaction_id,
             'quantity_purchased': quantity,
             'unit_price': round(unit_price, 2),
             'total_sale_amount': round(total_amount, 2)
         })
     
+    # Create DataFrame and save
     df = pd.DataFrame(data)
+    df.to_csv(sample_file, index=False)
     
-    # Ensure data directory exists
-    data_dir = project_root / 'data'
-    data_dir.mkdir(exist_ok=True)
+    logger.info(f"✅ Sample data created: {sample_file}")
+    logger.info(f"   - {len(df)} transactions")
+    logger.info(f"   - {df['customer_id'].nunique()} customers")
     
-    csv_path = data_dir / 'sample_transactions.csv'
-    df.to_csv(csv_path, index=False)
-    
-    logger.info(f"Created sample data: {csv_path}")
-    logger.info(f"Data shape: {df.shape}")
-    logger.info(f"Unique customers: {df['customer_id'].nunique()}")
-    
-    return csv_path
-
-def check_data():
-    """Check if data file exists"""
-    try:
-        # Try to import config and check configured path
-        from src.config import CSV_PATH
-        if os.path.exists(CSV_PATH):
-            logger.info(f"Data file found: {CSV_PATH}")
-            return True
-    except ImportError:
-        logger.warning("Could not import config, checking default locations")
-    
-    # Check common locations
-    data_dir = project_root / 'data'
-    csv_files = list(data_dir.glob('*.csv')) if data_dir.exists() else []
-    
-    if csv_files:
-        logger.info(f"Found CSV files: {csv_files}")
-        return True
-    
-    logger.info("No data files found, will create sample data")
-    return False
-
-def check_models():
-    """Check if trained models exist"""
-    artifacts_dir = project_root / 'artifacts'
-    
-    required_files = [
-        'xgb_model.joblib',
-        'scaler.joblib',
-        'feature_cols.joblib',
-        'kmeans_model.joblib'
-    ]
-    
-    missing_files = []
-    for file in required_files:
-        file_path = artifacts_dir / file
-        if not file_path.exists():
-            missing_files.append(str(file_path))
-    
-    if missing_files:
-        logger.info(f"Missing model files: {missing_files}")
-        return False
-    
-    logger.info("All model files found")
     return True
-
-def train_models():
-    """Train the models using the pipeline"""
-    try:
-        logger.info("Starting model training pipeline...")
-        from src.train_pipeline import main as train_main
-        train_main()
-        logger.info("Model training completed successfully")
-        return True
-    except Exception as e:
-        logger.error(f"Model training failed: {e}")
-        logger.exception("Training error details:")
-        return False
 
 def main():
     """Main startup function"""
-    logger.info("=== CLV Dashboard Startup ===")
-    logger.info(f"Project root: {project_root}")
-    logger.info(f"Python path: {sys.path[:3]}")
+    logger.info("🚀 Starting CLV Dashboard initialization...")
     
-    try:
-        # Ensure artifacts directory exists
-        artifacts_dir = project_root / 'artifacts'
-        artifacts_dir.mkdir(exist_ok=True)
-        
-        # Check data
-        if not check_data():
-            logger.info("Creating sample data...")
-            create_sample_data()
-        
-        # Check models
-        if not check_models():
-            logger.info("Training models...")
-            if not train_models():
-                logger.error("Failed to train models")
-                return False
-        else:
-            logger.info("Models already exist, skipping training")
-        
-        logger.info("=== Startup completed successfully ===")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Startup failed: {e}")
-        logger.exception("Startup error details:")
+    # Step 1: Check Python version
+    if not check_python_version():
+        logger.error("❌ Python version check failed")
         return False
+    
+    # Step 2: Create directories
+    create_artifacts_directory()
+    
+    # Step 3: Check for data
+    if not check_data_directory():
+        logger.info("No data found, creating sample data...")
+        if not create_sample_data():
+            logger.error("❌ Failed to create sample data")
+            return False
+    
+    # Step 4: Install compatible packages
+    logger.info("Checking package compatibility...")
+    try:
+        if not install_compatible_packages():
+            logger.error("❌ Package installation failed")
+            return False
+    except Exception as e:
+        logger.warning(f"Package installation issue: {e}")
+    
+    # Step 5: Test imports
+    imports_ok, failed = test_imports()
+    if not imports_ok:
+        logger.error(f"❌ Critical imports failed: {failed}")
+        return False
+    
+    # Step 6: Run training pipeline
+    if not run_training_pipeline():
+        logger.error("❌ Training pipeline failed")
+        return False
+    
+    logger.info("✅ CLV Dashboard initialization completed successfully!")
+    logger.info("🎯 You can now run: streamlit run app_streamlit.py")
+    
+    return True
 
 if __name__ == "__main__":
     success = main()
