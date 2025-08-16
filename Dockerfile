@@ -5,7 +5,6 @@ WORKDIR /app
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
-    supervisor \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies
@@ -15,7 +14,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy critical application files explicitly
 COPY ui/ ui/
 COPY src/ src/
-COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
 # Copy the rest of the application code
 COPY . .
@@ -23,9 +21,8 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p data artifacts ui src
 
-# Verify critical files and supervisord.conf exist
-RUN ls -la /app/ui/app_streamlit.py /app/src/api.py /etc/supervisor/conf.d/supervisord.conf || (echo "Critical files or config missing" && exit 1)
-RUN cat /etc/supervisor/conf.d/supervisord.conf
+# Verify critical file exists
+RUN ls -la /app/ui/app_streamlit.py || (echo "Critical file missing" && exit 1)
 
 # Create a non-root user for better security
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
@@ -34,5 +31,5 @@ USER appuser
 # Expose port 8080 for Cloud Run
 EXPOSE 8080
 
-# Use supervisord to manage both FastAPI and Streamlit
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+# Run Streamlit directly
+CMD ["streamlit", "run", "/app/ui/app_streamlit.py", "--server.port=8080", "--server.address=0.0.0.0", "--server.headless=true", "--server.fileWatcherType=none", "--browser.gatherUsageStats=false"]
