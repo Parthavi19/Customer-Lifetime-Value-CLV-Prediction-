@@ -25,7 +25,7 @@ COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
-# Expose port (Cloud Run will set PORT environment variable)
+# Expose port 8080 for Cloud Run
 EXPOSE 8080
 
 # Use supervisord to manage both FastAPI and Streamlit
