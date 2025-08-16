@@ -14,14 +14,20 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 
-# Try to import SHAP with error handling
+# Try to import SHAP with comprehensive error handling
 SHAP_AVAILABLE = False
+SHAP_ERROR = None
 try:
     import shap
     SHAP_AVAILABLE = True
     st.success("SHAP loaded successfully")
 except ImportError as e:
+    SHAP_ERROR = str(e)
     st.warning(f"SHAP not available: {e}")
+    SHAP_AVAILABLE = False
+except Exception as e:
+    SHAP_ERROR = str(e)
+    st.warning(f"SHAP loading error: {e}")
     SHAP_AVAILABLE = False
 
 # Import from src module with better error handling
@@ -47,6 +53,8 @@ with st.sidebar:
     st.header("System Status")
     st.write(f"**Config Loaded:** {'✅' if config_loaded else '❌'}")
     st.write(f"**SHAP Available:** {'✅' if SHAP_AVAILABLE else '❌'}")
+    if SHAP_ERROR:
+        st.write(f"**SHAP Error:** {SHAP_ERROR}")
     
     files_to_check = {
         "Customer Data": CUSTOMER_FEATS,
@@ -83,11 +91,46 @@ def load_models():
             models['scaler'] = joblib.load(SCALER_F)
         if os.path.exists(FEATURES_F):
             models['features'] = joblib.load(FEATURES_F)
+        # Only load SHAP explainer if SHAP is available and working
         if os.path.exists(SHAP_EXPLAINER) and SHAP_AVAILABLE:
-            models['shap_explainer'] = joblib.load(SHAP_EXPLAINER)
+            try:
+                models['shap_explainer'] = joblib.load(SHAP_EXPLAINER)
+            except Exception as e:
+                st.warning(f"Could not load SHAP explainer: {e}")
     except Exception as e:
         st.error(f"Error loading models: {e}")
     return models
+
+def safe_shap_analysis(models, df, feature_cols, sample_size=10):
+    """Safely perform SHAP analysis with multiple fallback strategies"""
+    if not SHAP_AVAILABLE or 'shap_explainer' not in models:
+        return None, "SHAP not available"
+    
+    try:
+        # Use smaller sample size for stability
+        X_sample = df[feature_cols].head(sample_size)
+        
+        if 'scaler' in models:
+            X_scaled = models['scaler'].transform(X_sample)
+        else:
+            X_scaled = X_sample.values
+        
+        explainer = models['shap_explainer']
+        
+        # Try different SHAP methods
+        try:
+            shap_values = explainer(X_scaled)
+            return shap_values, None
+        except Exception as e1:
+            try:
+                # Fallback method
+                shap_values = explainer.shap_values(X_scaled)
+                return shap_values, None
+            except Exception as e2:
+                return None, f"SHAP calculation failed: {e1}, {e2}"
+                
+    except Exception as e:
+        return None, f"SHAP analysis error: {e}"
 
 def initialize_app():
     """Run initialization if needed"""
@@ -172,56 +215,77 @@ if "segment_name" in df.columns and "predicted_clv" in df.columns and len(df) > 
     except Exception as e:
         st.error(f"Error creating CLV chart: {e}")
 
-# Feature Importance with fallback
+# Feature Importance with robust error handling
 st.subheader("🌐 Feature Importance")
 if 'xgb' in models and 'features' in models:
     try:
+        feature_cols = models['features']
+        xgb_model = models['xgb']
+        
+        # Always try XGBoost built-in feature importance first (more reliable)
+        st.info("Showing XGBoost built-in feature importance")
+        
+        # Get feature importance
+        importance_scores = xgb_model.feature_importances_
+        importance_df = pd.DataFrame({
+            'feature': feature_cols,
+            'importance': importance_scores
+        }).sort_values('importance', ascending=False).head(15)  # Top 15 features
+        
+        fig, ax = plt.subplots(figsize=(12, 8))
+        bars = ax.barh(range(len(importance_df)), importance_df['importance'])
+        ax.set_yticks(range(len(importance_df)))
+        ax.set_yticklabels(importance_df['feature'])
+        ax.set_xlabel('Feature Importance')
+        ax.set_title('XGBoost Feature Importance (Top 15)')
+        ax.invert_yaxis()
+        
+        # Add value labels
+        for i, (bar, value) in enumerate(zip(bars, importance_df['importance'])):
+            ax.text(bar.get_width() + 0.001, bar.get_y() + bar.get_height()/2, 
+                   f'{value:.3f}', va='center', ha='left')
+        
+        plt.tight_layout()
+        st.pyplot(fig)
+        plt.close()
+        
+        # Try SHAP as secondary option with better error handling
         if SHAP_AVAILABLE and 'shap_explainer' in models:
-            # Try SHAP feature importance
-            feature_cols = models['features']
-            X_sample = df[feature_cols].head(50)  # Smaller sample for performance
-            X_scaled = models['scaler'].transform(X_sample)
-            
-            explainer = models['shap_explainer']
-            shap_values = explainer(X_scaled)
-            
-            fig, ax = plt.subplots(figsize=(10, 6))
-            shap.summary_plot(shap_values, features=X_sample, 
-                             feature_names=feature_cols, show=False, ax=ax)
-            plt.tight_layout()
-            st.pyplot(fig)
-            plt.close()
-        else:
-            # Fallback to XGBoost built-in feature importance
-            st.info("Using XGBoost built-in feature importance (SHAP unavailable)")
-            
-            feature_cols = models['features']
-            xgb_model = models['xgb']
-            
-            # Get feature importance
-            importance_scores = xgb_model.feature_importances_
-            importance_df = pd.DataFrame({
-                'feature': feature_cols,
-                'importance': importance_scores
-            }).sort_values('importance', ascending=False)
-            
-            fig, ax = plt.subplots(figsize=(10, 6))
-            bars = ax.barh(importance_df['feature'], importance_df['importance'])
-            ax.set_xlabel('Feature Importance')
-            ax.set_title('XGBoost Feature Importance')
-            ax.invert_yaxis()
-            
-            # Add value labels
-            for bar, value in zip(bars, importance_df['importance']):
-                ax.text(bar.get_width() + 0.01, bar.get_y() + bar.get_height()/2, 
-                       f'{value:.3f}', va='center')
-            
-            plt.tight_layout()
-            st.pyplot(fig)
-            plt.close()
-            
+            with st.expander("🔍 SHAP Analysis (Advanced)", expanded=False):
+                st.info("Attempting SHAP analysis...")
+                
+                shap_values, error = safe_shap_analysis(models, df, feature_cols, sample_size=5)
+                
+                if shap_values is not None:
+                    try:
+                        X_sample = df[feature_cols].head(5)
+                        
+                        fig, ax = plt.subplots(figsize=(10, 6))
+                        
+                        # Try different SHAP plot methods
+                        try:
+                            shap.summary_plot(shap_values, features=X_sample, 
+                                             feature_names=feature_cols, show=False, ax=ax)
+                            st.pyplot(fig)
+                            plt.close()
+                        except Exception as plot_error:
+                            st.warning(f"SHAP summary plot failed: {plot_error}")
+                            # Try waterfall plot instead
+                            try:
+                                fig, ax = plt.subplots(figsize=(10, 6))
+                                shap.waterfall_plot(shap_values[0], show=False)
+                                st.pyplot(fig)
+                                plt.close()
+                            except Exception as waterfall_error:
+                                st.warning(f"SHAP waterfall plot also failed: {waterfall_error}")
+                    except Exception as e:
+                        st.warning(f"SHAP visualization error: {e}")
+                else:
+                    st.warning(f"SHAP analysis failed: {error}")
+                    
     except Exception as e:
-        st.error(f"Error loading models for feature importance: {e}")
+        st.error(f"Error in feature importance analysis: {e}")
+        st.info("This might be due to numpy/SHAP compatibility issues. Try updating your environment.")
 else:
     st.warning("Models not available for feature importance analysis")
 
@@ -246,28 +310,46 @@ if len(df) > 0 and 'features' in models:
                     st.write(f"**Segment:** {cust_info['segment_name']}")
             
             with col2:
-                st.write("**Feature Values:**")
+                st.write("**Top Feature Values:**")
                 feature_cols = models['features']
-                for feature in feature_cols:
-                    if feature in cust_info:
-                        st.write(f"**{feature}:** {cust_info[feature]:.2f}")
+                
+                # Show top 10 features for readability
+                if 'xgb' in models:
+                    importance_scores = models['xgb'].feature_importances_
+                    importance_df = pd.DataFrame({
+                        'feature': feature_cols,
+                        'importance': importance_scores
+                    }).sort_values('importance', ascending=False).head(10)
+                    
+                    for feature in importance_df['feature']:
+                        if feature in cust_info:
+                            st.write(f"**{feature}:** {cust_info[feature]:.2f}")
+                else:
+                    # Fallback to first 10 features
+                    for feature in feature_cols[:10]:
+                        if feature in cust_info:
+                            st.write(f"**{feature}:** {cust_info[feature]:.2f}")
             
-            # Try SHAP explanation
+            # Try SHAP explanation with better error handling
             if SHAP_AVAILABLE and 'shap_explainer' in models and 'scaler' in models:
-                try:
-                    cust_row = df[df["customer_id"].astype(str) == selected_customer][feature_cols]
-                    cust_scaled = models['scaler'].transform(cust_row)
-                    cust_shap_values = models['shap_explainer'](cust_scaled)
+                with st.expander("🔍 Individual Customer SHAP Explanation", expanded=False):
+                    try:
+                        cust_row = df[df["customer_id"].astype(str) == selected_customer][feature_cols]
+                        cust_scaled = models['scaler'].transform(cust_row)
+                        
+                        explainer = models['shap_explainer']
+                        cust_shap_values = explainer(cust_scaled)
 
-                    fig, ax = plt.subplots(figsize=(10, 6))
-                    shap.waterfall_plot(cust_shap_values[0], show=False)
-                    plt.tight_layout()
-                    st.pyplot(fig)
-                    plt.close()
-                except Exception as e:
-                    st.warning("SHAP explanation not available due to compatibility issues. Showing feature values instead.")
+                        fig, ax = plt.subplots(figsize=(10, 8))
+                        shap.waterfall_plot(cust_shap_values[0], show=False)
+                        plt.tight_layout()
+                        st.pyplot(fig)
+                        plt.close()
+                    except Exception as e:
+                        st.warning(f"Individual SHAP explanation failed: {e}")
+                        st.info("This is often due to numpy/SHAP compatibility issues.")
             else:
-                st.info("SHAP explanation not available due to compatibility issues. Showing feature values instead.")
+                st.info("SHAP individual explanations not available.")
 
     except Exception as e:
         st.error(f"Error in customer analysis: {e}")
@@ -292,8 +374,11 @@ with st.expander("System Information"):
     st.write("**Environment:**")
     st.write(f"- Python Version: {sys.version}")
     st.write(f"- NumPy Version: {np.__version__}")
+    st.write(f"- Pandas Version: {pd.__version__}")
     st.write(f"- Streamlit Version: {st.__version__}")
     st.write(f"- SHAP Available: {SHAP_AVAILABLE}")
+    if SHAP_ERROR:
+        st.write(f"- SHAP Error: {SHAP_ERROR}")
 
 st.markdown("---")
-st.markdown("**CLV Dashboard** - Powered by XGBoost")
+st.markdown("**CLV Dashboard** - Powered by XGBoost and Machine Learning")
