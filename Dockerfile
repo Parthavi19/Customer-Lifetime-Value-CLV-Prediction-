@@ -12,8 +12,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy critical application files explicitly
-COPY ui/ ui/
-COPY src/ src/
+COPY ui/
+COPY src/ 
 
 # Copy the rest of the application code
 COPY . .
@@ -33,3 +33,4 @@ EXPOSE 8080
 
 # Run Streamlit directly
 CMD ["streamlit", "run", "/app/ui/app_streamlit.py", "--server.port=8080", "--server.address=0.0.0.0", "--server.headless=true", "--server.fileWatcherType=none", "--browser.gatherUsageStats=false"]
+
